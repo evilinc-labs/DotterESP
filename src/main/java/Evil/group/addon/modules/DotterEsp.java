@@ -94,6 +94,22 @@ public class DotterEsp extends Module {
         .build()
     );
 
+    // Discord Webhook
+    private final Setting<Boolean> discordWebhookEnabled = sgGeneral.add(new BoolSetting.Builder()
+        .name("discord-webhook-enabled")
+        .description("Send Discord webhook notifications when Bedrock players (starting with '.') are detected.")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<String> discordWebhookUrl = sgGeneral.add(new StringSetting.Builder()
+        .name("discord-webhook-url")
+        .description("Discord webhook URL for notifications.")
+        .defaultValue("")
+        .visible(discordWebhookEnabled::get)
+        .build()
+    );
+
     public DotterEsp() {
         super(
             DotterESPAddon.CATEGORY,
@@ -104,6 +120,9 @@ public class DotterEsp extends Module {
 
     // Bedrock announce once per appearance
     private final Set<UUID> announcedBedrock = new HashSet<>();
+    
+    // Track which players were sent to Discord webhook to avoid duplicates
+    private final Set<UUID> webhookNotifiedPlayers = new HashSet<>();
 
     // Debug: track draw set + cache info for leave messages
     private final Set<UUID> debugPrevDrawSet = new HashSet<>();
@@ -366,6 +385,40 @@ public class DotterEsp extends Module {
             }
 
             announcedBedrock.retainAll(currentlyVisible);
+        }
+
+        // Discord webhook notification for Bedrock players
+        if (discordWebhookEnabled.get()) {
+            String webhookUrl = discordWebhookUrl.get();
+            
+            if (webhookUrl != null && !webhookUrl.trim().isEmpty() 
+                && DiscordWebhook.isValidWebhookUrl(webhookUrl)) {
+                
+                Set<UUID> currentlyVisible = new HashSet<>();
+                
+                for (AbstractClientPlayerEntity p : mc.world.getPlayers()) {
+                    if (p == mc.player) continue;
+                    if (!isBedrock(p)) continue;
+
+                    UUID id = p.getUuid();
+                    currentlyVisible.add(id);
+
+                    // Send webhook only once per player appearance
+                    if (webhookNotifiedPlayers.add(id)) {
+                        BlockPos bp = p.getBlockPos();
+                        DiscordWebhook webhook = new DiscordWebhook(webhookUrl);
+                        webhook.sendPlayerDetection(
+                            p.getGameProfile().getName(),
+                            bp.getX(),
+                            bp.getY(),
+                            bp.getZ()
+                        );
+                    }
+                }
+                
+                // Clean up players that are no longer visible
+                webhookNotifiedPlayers.retainAll(currentlyVisible);
+            }
         }
 
         // Debug nearest 3 within max distance

@@ -10,6 +10,10 @@ base {
 
 repositories {
     maven {
+        name = "Fabric"
+        url = "https://maven.fabricmc.net/"
+    }
+    maven {
         name = "Meteor Dev Releases"
         url = "https://maven.meteordev.org/releases"
     }
