@@ -1,6 +1,6 @@
 package Evil.group.addon.modules;
 
-import Evil.group.addon.DotterESPAddon;
+import Evil.group.addon.AntiDotterAddon;
 import Evil.group.addon.utils.DiscordWebhook;
 import Evil.group.addon.utils.compat.CompatReflect;
 
@@ -111,7 +111,7 @@ public class DotterEsp extends Module {
 
     public DotterEsp() {
         super(
-            DotterESPAddon.CATEGORY,
+            AntiDotterAddon.CATEGORY,
             "DotterEsp",
             "Draws tracers to Bedrock players (heuristic: name starts with '.')."
         );

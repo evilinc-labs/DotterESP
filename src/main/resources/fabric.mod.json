@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "id": "dotteresp",
+  "id": "antidotteraddon",
   "version": "${version}",
-  "name": "DotterESP",
+  "name": "AntiDotterAddon",
   "description": "ESP for Bedrock players on Java Edition.",
   "authors": [
     "Evil-Inc"
@@ -14,7 +14,7 @@
   "environment": "client",
   "entrypoints": {
     "meteor": [
-      "Evil.group.addon.DotterESPAddon"
+      "Evil.group.addon.AntiDotterAddon"
     ]
   },
   "mixins": [
