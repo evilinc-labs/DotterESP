@@ -1,6 +1,8 @@
 package Evil.group.addon.modules;
 
 import Evil.group.addon.DotterESPAddon;
+import Evil.group.addon.utils.DiscordWebhook;
+
 import com.mojang.blaze3d.systems.RenderSystem;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
@@ -161,6 +163,16 @@ public class DotterEsp extends Module {
     private static Method GSM_DISABLE_DEPTH;
     private static Method GSM_ENABLE_DEPTH;
 
+    // ====== Webhook shit ======
+    // Fixing the discord webhook, needs to be 100% optional
+    private DiscordWebhook webhookClient;
+    private String webhookClientUrl = "";
+
+    // Web hook anti-spam: don't resend for same UUID more often than X seconds
+    private final Map<UUID, Long> webhookLastSentMs = new HashMap<>();
+    private long webhookNextCleanupMs = 0;
+    // ====== end webhook vars =====
+    
     private static void initReflection() {
         if (REFLECT_READY) return;
         REFLECT_READY = true;
@@ -406,37 +418,55 @@ public class DotterEsp extends Module {
             announcedBedrock.retainAll(currentlyVisible);
         }
 
-        // Discord webhook notification for Bedrock players
-        if (discordWebhookEnabled.get() && bedrockPlayers != null) {
-            String webhookUrl = discordWebhookUrl.get();
+        // Discord webhook notification (optional + with anti-spam)
+        if (bedrockPlayers != null && discordWebhookEnabled.get()) {
+            DiscordWebhook webhook = getWebhookClient();
+            if (webhook == null) {
+                // setting on but URL invalid -> behave like disabled (no side effects)
+                disableWebhookRuntime();
+            } else {
+                // Send once per appearance + optional cooldown
+                final long now = System.currentTimeMillis();
+                final long cooldownMs = 30_000; // 30s cooldown; tweak or make a setting
             
-            if (webhookUrl != null && !webhookUrl.trim().isEmpty() 
-                && DiscordWebhook.isValidWebhookUrl(webhookUrl)) {
-                
-                // Reuse webhook instance for all notifications in this tick
-                DiscordWebhook webhook = new DiscordWebhook(webhookUrl);
                 Set<UUID> currentlyVisible = new HashSet<>();
-                
+            
                 for (AbstractClientPlayerEntity p : bedrockPlayers) {
                     UUID id = p.getUuid();
                     currentlyVisible.add(id);
-
-                    // Send webhook only once per player appearance
-                    if (webhookNotifiedPlayers.add(id)) {
+                
+                    // “Once per appearance” gate
+                    boolean firstSeenThisAppearance = webhookNotifiedPlayers.add(id);
+                
+                    // Cooldown gate (prevents flicker-spam)
+                    Long last = webhookLastSentMs.get(id);
+                    boolean cooldownOk = (last == null) || (now - last >= cooldownMs);
+                
+                    if (firstSeenThisAppearance || cooldownOk) {
                         BlockPos bp = p.getBlockPos();
                         webhook.sendPlayerDetection(
                             p.getGameProfile().getName(),
-                            bp.getX(),
-                            bp.getY(),
-                            bp.getZ()
+                            bp.getX(), bp.getY(), bp.getZ()
                         );
+                        webhookLastSentMs.put(id, now);
                     }
                 }
-                
-                // Clean up players that are no longer visible
+            
+                // keep sets small / correct
                 webhookNotifiedPlayers.retainAll(currentlyVisible);
+            
+                // periodic cleanup of cooldown map (so it doesn't grow forever)
+                if (now >= webhookNextCleanupMs) {
+                    webhookNextCleanupMs = now + 60_000;
+                    webhookLastSentMs.keySet().retainAll(currentlyVisible);
+                }
             }
+        } else {
+            // If it's not actively running, keep it truly "off"
+            disableWebhookRuntime();
         }
+
+
 
         // Debug nearest 3 within max distance
         debugDrawList.clear();
@@ -571,4 +601,31 @@ public class DotterEsp extends Module {
             enableDepthCompat();
         }
     }
+    private DiscordWebhook getWebhookClient() {
+        if (!discordWebhookEnabled.get()) return null;
+
+        String url = discordWebhookUrl.get();
+        if (!DiscordWebhook.isValidWebhookUrl(url)) return null;
+
+        // Recreate only if URL changed or client missing
+        if (webhookClient == null || !Objects.equals(webhookClientUrl, url)) {
+            webhookClientUrl = url;
+            webhookClient = new DiscordWebhook(url);
+            // Optional: reset per-player tracking when URL changes
+            webhookNotifiedPlayers.clear();
+            webhookLastSentMs.clear();
+        }
+
+        return webhookClient;
+    }
+
+    /** Call when webhook is disabled or invalid so it's truly "off" */
+    private void disableWebhookRuntime() {
+        webhookClient = null;
+        webhookClientUrl = "";
+        webhookNotifiedPlayers.clear();
+        webhookLastSentMs.clear();
+    }
+    // end disc webhook functions
+
 }

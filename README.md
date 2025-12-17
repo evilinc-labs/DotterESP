@@ -7,10 +7,9 @@ Free to fork, free to skid, it's open source; For the Bedrock Incursion.
 ## Features
 
 - **ESP Tracers**: Visual tracers to Bedrock players (names starting with '.')
-- **Discord Webhook Notifications**: Get real-time Discord notifications when Bedrock players are detected (see [DISCORD_WEBHOOK_FEATURE.md](DISCORD_WEBHOOK_FEATURE.md))
+- **OPTIONAL Discord Webhook**: Ability to use your Discord webhook to relay Dotter cords to your bots.  Completely optional, review DotterEsp.java for its implementation.  Thx Copilot, ig.  (see [DISCORD_WEBHOOK_FEATURE.md](DISCORD_WEBHOOK_FEATURE.md))
 - **Coordinate Tracking**: Announces player coordinates client-side
 - **Box Outlines**: Optional 3D box outlines around detected players
-- **Debug Mode**: Track nearest entities for testing
 
 ### Compatibility
 
