@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "antidotteraddon",
   "version": "${version}",
-  "name": "AntiDotterAddon",
+  "name": "Anti Dotter Tools",
   "description": "ESP for Bedrock players on Java Edition.",
   "authors": [
     "Evil-Inc"
