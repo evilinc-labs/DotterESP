@@ -1,57 +1,61 @@
 package Evil.group.addon.modules;
 
-import Evil.group.addon.AntiDotterAddon;
-import Evil.group.addon.modules.AutoBuilder.BuildMode;
-import Evil.group.addon.utils.HotbarSupply;
-import Evil.group.addon.utils.compat.CompatReflect;
-import meteordevelopment.meteorclient.events.entity.player.PlayerMoveEvent;
-import meteordevelopment.meteorclient.events.render.Render3DEvent;
-import meteordevelopment.meteorclient.gui.GuiTheme;
-import meteordevelopment.meteorclient.gui.widgets.WWidget;
-import meteordevelopment.meteorclient.gui.widgets.containers.WTable;
-import meteordevelopment.meteorclient.gui.widgets.containers.WVerticalList;
-import meteordevelopment.meteorclient.gui.widgets.pressable.WCheckbox;
-import meteordevelopment.meteorclient.renderer.ShapeMode;
-import meteordevelopment.meteorclient.events.world.TickEvent;
-import meteordevelopment.meteorclient.settings.*;
-import meteordevelopment.meteorclient.systems.modules.Module;
-import meteordevelopment.meteorclient.systems.modules.Modules;
-import meteordevelopment.meteorclient.systems.modules.world.Timer;
-import meteordevelopment.meteorclient.utils.player.FindItemResult;
-import meteordevelopment.meteorclient.utils.player.InvUtils;
-import meteordevelopment.meteorclient.utils.player.Rotations;
-import meteordevelopment.meteorclient.utils.render.color.SettingColor;
-import meteordevelopment.orbit.EventHandler;
-import net.minecraft.block.Block;
-import net.minecraft.block.Blocks;
-import net.minecraft.item.BlockItem;
-import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
-import net.minecraft.network.packet.c2s.play.PlayerInteractBlockC2SPacket;
-import net.minecraft.text.MutableText;
-import net.minecraft.util.Formatting;
-import net.minecraft.util.Hand;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.Vec3d;
-
-// these are needed to save the pattern to file
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-import com.google.gson.JsonSyntaxException;
-import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.text.Text;
-//import net.minecraft.text.MutableText;
-//import net.minecraft.util.Formatting;
-
-
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+
+// these are needed to save the pattern to file
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonSyntaxException;
+
+import Evil.group.addon.AntiDotterAddon;
+import Evil.group.addon.utils.HotbarSupply;
+import meteordevelopment.meteorclient.events.entity.player.PlayerMoveEvent;
+import meteordevelopment.meteorclient.events.render.Render3DEvent;
+import meteordevelopment.meteorclient.events.world.TickEvent;
+import meteordevelopment.meteorclient.gui.GuiTheme;
+import meteordevelopment.meteorclient.gui.widgets.WWidget;
+import meteordevelopment.meteorclient.gui.widgets.containers.WTable;
+import meteordevelopment.meteorclient.gui.widgets.containers.WVerticalList;
+import meteordevelopment.meteorclient.gui.widgets.pressable.WCheckbox;
+import meteordevelopment.meteorclient.renderer.ShapeMode;
+import meteordevelopment.meteorclient.settings.BlockSetting;
+import meteordevelopment.meteorclient.settings.BoolSetting;
+import meteordevelopment.meteorclient.settings.ColorSetting;
+import meteordevelopment.meteorclient.settings.DoubleSetting;
+import meteordevelopment.meteorclient.settings.EnumSetting;
+import meteordevelopment.meteorclient.settings.IntSetting;
+import meteordevelopment.meteorclient.settings.Setting;
+import meteordevelopment.meteorclient.settings.SettingGroup;
+import meteordevelopment.meteorclient.systems.modules.Module;
+import meteordevelopment.meteorclient.systems.modules.Modules;
+import meteordevelopment.meteorclient.systems.modules.render.FreeLook;
+import meteordevelopment.meteorclient.systems.modules.world.Timer;
+import meteordevelopment.meteorclient.utils.player.FindItemResult;
+import meteordevelopment.meteorclient.utils.player.InvUtils;
+import meteordevelopment.meteorclient.utils.player.Rotations;
+import meteordevelopment.meteorclient.utils.render.color.SettingColor;
+import meteordevelopment.orbit.EventHandler;
+import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.block.Block;
+import net.minecraft.block.Blocks;
+import net.minecraft.item.BlockItem;
+import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
+import net.minecraft.network.packet.c2s.play.PlayerInteractBlockC2SPacket;
+import net.minecraft.text.MutableText;
+import net.minecraft.text.Text;
+//import net.minecraft.text.MutableText;
+//import net.minecraft.util.Formatting;
+import net.minecraft.util.Formatting;
+import net.minecraft.util.Hand;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.Vec3d;
 
 public class AutoBuilder extends Module {
     public enum BuildMode {
@@ -176,6 +180,14 @@ public class AutoBuilder extends Module {
         .build()
     );
     // end replenish logic
+    private final Setting<Boolean> useFreeLook =
+        settings.getDefaultGroup().add(
+            new BoolSetting.Builder()
+                .name("freelook")
+                .description("Enable FreeLook while module is active.")
+                .defaultValue(true)
+                .build()
+        );
 
     // Render
     private final Setting<Boolean> render = sgRender.add(new BoolSetting.Builder()
@@ -222,7 +234,7 @@ public class AutoBuilder extends Module {
 
     // ---- Placement rate-limit (2b has this hard limit) ----
     private static final int MAX_PLACES_PER_WINDOW = 9;
-    private static final long PLACE_WINDOW_MS = 300;
+    private static final long PLACE_WINDOW_MS = 300;    // 2b limit: 9 blocks per 300ms
 
     // Snapshot placement plan at activation so moving doesn't shift the pattern.
     private List<BlockPos> plannedPositions = List.of();
@@ -318,7 +330,13 @@ public class AutoBuilder extends Module {
             toggle();
             return;
         }
-
+        if (useFreeLook.get()) { 
+            // enable freelook
+            FreeLook freeLook = Modules.get().get(FreeLook.class);
+            if (freeLook != null && !freeLook.isActive()) {
+                freeLook.toggle();
+            }
+        }
         // 1) Resolve facing FIRST (so snapshot uses the right direction)
         if (autoOrientation.get()) {
             buildDirection = mc.player.getHorizontalFacing();
@@ -365,16 +383,57 @@ public class AutoBuilder extends Module {
         if (timer != null) {
             timer.setOverride(Timer.OFF);
         }
+        if (useFreeLook.get()) {
+            // disable freelook
+            FreeLook freeLook = Modules.get().get(FreeLook.class);
+            if (freeLook != null && freeLook.isActive()) {
+                freeLook.toggle();
+            }
+        }
     }
     // attempting to move onto an ontick method to prevent placing issues
+    //@EventHandler
+    //private void onTick(TickEvent.Post event) {
+    //    if (mc.player == null || mc.world == null || mc.interactionManager == null) return;
+//
+    //    // Drive placement from tick
+    //    tryPlace();
+//
+    //    // Immediate auto-disable when done
+    //    if (autoDisable.get()) {
+    //        List<BlockPos> positions = plannedPositions;
+    //        if (!positions.isEmpty() && allBlocksPlaced(positions)) {
+    //            Timer timer = Modules.get().get(Timer.class);
+    //            if (timer != null) timer.setOverride(Timer.OFF);
+    //            toggle();
+    //        }
+    //    }
+    //}
+    ///*
     @EventHandler
+    // attempting to use onTick to autoDisable
     private void onTick(TickEvent.Post event) {
+        if (!autoDisable.get()) return;
+        if (mc.player == null || mc.world == null) return;
+
+        List<BlockPos> positions = plannedPositions; 
+
+        if (positions == null || positions.isEmpty()) return;
+
+        if (allBlocksPlaced(positions)) {
+            Timer timer = Modules.get().get(Timer.class);
+            if (timer != null) timer.setOverride(Timer.OFF);
+            toggle();
+        }
+    }
+    @EventHandler
+    private void onPlayerMove(PlayerMoveEvent event) {
         if (mc.player == null || mc.world == null || mc.interactionManager == null) return;
 
-        // Drive placement from tick
+        // Try placing on every move event for faster placement
         tryPlace();
-
-        // Immediate auto-disable when done
+        
+        // Auto-disable check
         if (autoDisable.get()) {
             List<BlockPos> positions = plannedPositions;
             if (!positions.isEmpty() && allBlocksPlaced(positions)) {
@@ -384,26 +443,7 @@ public class AutoBuilder extends Module {
             }
         }
     }
-    /*
-    @EventHandler
-    private void onPlayerMove(PlayerMoveEvent event) {
-        if (mc.player == null || mc.world == null || mc.interactionManager == null) return;
-
-        // Try placing on every move event for faster placement
-        tryPlace();
-        
-        // Auto-disable check
-        List<BlockPos> positions = getBlocksToPlace();
-        if (!positions.isEmpty() && autoDisable.get() && allBlocksPlaced(positions)) {
-            // Disable timer before toggling so it happens instantly
-            Timer timer = Modules.get().get(Timer.class);
-            if (timer != null) {
-                timer.setOverride(Timer.OFF);
-            }
-            toggle();
-        }
-    }
-        */
+        //*/
 
     private void tryPlace() {
         if (mc.player == null || mc.world == null || mc.interactionManager == null) return;
@@ -447,7 +487,7 @@ public class AutoBuilder extends Module {
                         timer.setOverride(floatTimerScale.get());
                     }
                     
-                    lastPlaceTime = now;
+                    lastPlaceTime = now;  // 300ms rate limiter
                     currentIndex++;
 
                     // attempt auto-disable check
@@ -546,7 +586,7 @@ public class AutoBuilder extends Module {
             int baseX = playerPos.getX();
             int baseZ = playerPos.getZ();
 
-            int step = (verticalAnchor.get() == VerticalAnchor.InFront) ? 1 : -2;   // offset for vertical placement
+            int step = (verticalAnchor.get() == VerticalAnchor.InFront) ? 2 : -2;   // offset for vertical placement
 
             switch (facing) {
                 case NORTH -> baseZ += -step;
