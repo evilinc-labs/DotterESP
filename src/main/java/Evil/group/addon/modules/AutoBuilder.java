@@ -15,8 +15,11 @@ import com.google.gson.JsonSyntaxException;
 import Evil.group.addon.AntiDotterAddon;
 import Evil.group.addon.utils.HotbarSupply;
 import meteordevelopment.meteorclient.events.entity.player.PlayerMoveEvent;
+import meteordevelopment.meteorclient.events.render.Render2DEvent;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
+import meteordevelopment.meteorclient.renderer.text.TextRenderer;
+import meteordevelopment.meteorclient.utils.render.color.Color;
 import meteordevelopment.meteorclient.gui.GuiTheme;
 import meteordevelopment.meteorclient.gui.widgets.WWidget;
 import meteordevelopment.meteorclient.gui.widgets.containers.WTable;
@@ -235,6 +238,38 @@ public class AutoBuilder extends Module {
         .defaultValue(true)
         .build()
     );
+
+    private final Setting<Boolean> showHUD = sgRender.add(new BoolSetting.Builder()
+        .name("show-hud")
+        .description("Show build counter HUD on screen.")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Integer> hudX = sgRender.add(new IntSetting.Builder()
+        .name("hud-x")
+        .description("HUD X position.")
+        .defaultValue(10)
+        .min(0)
+        .sliderRange(0, 500)
+        .visible(showHUD::get)
+        .build()
+    );
+
+    private final Setting<Integer> hudY = sgRender.add(new IntSetting.Builder()
+        .name("hud-y")
+        .description("HUD Y position.")
+        .defaultValue(100)
+        .min(0)
+        .sliderRange(0, 500)
+        .visible(showHUD::get)
+        .build()
+    );
+
+    // HUD Colors
+    private static final Color HEADER_COLOR = new Color(138, 43, 226, 255);  // Purple
+    private static final Color TEXT_COLOR = new Color(255, 255, 255, 255);   // White
+    private static final Color VALUE_COLOR = new Color(255, 255, 85, 255);   // Yellow
 
     // Gson instance for JSON serialization
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -731,6 +766,39 @@ public class AutoBuilder extends Module {
                 event.renderer.box(pos, sideColor.get(), lineColor.get(), shapeMode.get(), 0);
             }
         }
+    }
+
+    @EventHandler
+    private void onRender2D(Render2DEvent event) {
+        if (!showHUD.get()) return;
+        
+        int x = hudX.get();
+        int y = hudY.get();
+        int lineHeight = 12;
+        
+        TextRenderer text = TextRenderer.get();
+        text.begin();
+        
+        // Header
+        text.render("AutoBuilder", x, y, HEADER_COLOR, true);
+        y += lineHeight;
+        
+        // Build counter
+        text.render("Total Builds: " + totalBuildsCompleted, x, y, VALUE_COLOR, true);
+        y += lineHeight;
+        
+        // Current session info (only when active)
+        if (isActive() && !plannedPositions.isEmpty()) {
+            int placed = 0;
+            for (BlockPos pos : plannedPositions) {
+                if (mc.world != null && !mc.world.getBlockState(pos).isReplaceable()) {
+                    placed++;
+                }
+            }
+            text.render("Progress: " + placed + "/" + plannedPositions.size(), x, y, TEXT_COLOR, true);
+        }
+        
+        text.end();
     }
     private boolean canPlaceNow(long now) {
         while (!placeTimes.isEmpty() && now - placeTimes.peekFirst() > PLACE_WINDOW_MS) {
