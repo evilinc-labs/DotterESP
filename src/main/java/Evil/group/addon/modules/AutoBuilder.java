@@ -162,6 +162,14 @@ public class AutoBuilder extends Module {
         .sliderRange(-3, 3)
         .build()
     );
+
+    private final Setting<Integer> offsetForward = sgGeneral.add(new IntSetting.Builder()
+        .name("offset-forward")
+        .description("Offset in blocks along the direction you're facing when activated.")
+        .defaultValue(0)
+        .sliderRange(-10, 10)
+        .build()
+    );
     // Replenish logic
     private final Setting<Boolean> autoReplenish = sgGeneral.add(new BoolSetting.Builder()
         .name("auto-replenish")
@@ -221,16 +229,28 @@ public class AutoBuilder extends Module {
         .build()
     );
 
+    private final Setting<Boolean> showBuildCounter = sgGeneral.add(new BoolSetting.Builder()
+        .name("show-build-counter")
+        .description("Show total builds completed in module info.")
+        .defaultValue(true)
+        .build()
+    );
+
     // Gson instance for JSON serialization
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final String PATTERN_DIR = "Evil";
     private static final String PATTERN_FILE = "autoBuilder.json";
+    private static final String COUNTER_FILE = "autoBuilderStats.json";
 
     // 5x5 Grid - vertical: X is horizontal, Y is vertical (row 0 = top)
     private final boolean[][] grid = new boolean[5][5];
     private long lastPlaceTime = 0;
     private int currentIndex = 0;
     private Direction buildDirection = Direction.NORTH;
+
+    // Persistent build counter
+    private int totalBuildsCompleted = 0;
+    private boolean buildCountedThisSession = false;
 
     // ---- Placement rate-limit (2b has this hard limit) ----
     private static final int MAX_PLACES_PER_WINDOW = 9;
@@ -248,6 +268,16 @@ public class AutoBuilder extends Module {
         super(AntiDotterAddon.CATEGORY, "auto-builder", "Builds 5x5 patterns vertically or horizontally. Made for 2b2t.");
         // Load pattern once at module creation (if file exists)
         tryLoadPatternOnInit();
+        // Load build counter
+        loadBuildCounter();
+    }
+
+    @Override
+    public String getInfoString() {
+        if (showBuildCounter.get()) {
+            return "Builds: " + totalBuildsCompleted;
+        }
+        return null;
     }
 
     @Override
@@ -273,10 +303,21 @@ public class AutoBuilder extends Module {
         boolean[][] grid = new boolean[5][5];
     }
 
+    private static class AutoBuilderStatsFile {
+        int version = 1;
+        int totalBuildsCompleted = 0;
+    }
+
     private static Path getPatternFilePath() {
         return FabricLoader.getInstance().getConfigDir()
             .resolve(PATTERN_DIR)
             .resolve(PATTERN_FILE);
+    }
+
+    private static Path getCounterFilePath() {
+        return FabricLoader.getInstance().getConfigDir()
+            .resolve(PATTERN_DIR)
+            .resolve(COUNTER_FILE);
     }
 
     private void loadPatternFromFile(Path file) {
@@ -325,6 +366,7 @@ public class AutoBuilder extends Module {
     public void onActivate() {
         lastPlaceTime = 0;
         currentIndex = 0;
+        buildCountedThisSession = false;
 
         if (mc.player == null || mc.world == null) {
             toggle();
@@ -421,6 +463,9 @@ public class AutoBuilder extends Module {
         if (positions == null || positions.isEmpty()) return;
 
         if (allBlocksPlaced(positions)) {
+            // Increment build counter when build completes
+            incrementBuildCounter();
+            
             Timer timer = Modules.get().get(Timer.class);
             if (timer != null) timer.setOverride(Timer.OFF);
             toggle();
@@ -437,6 +482,9 @@ public class AutoBuilder extends Module {
         if (autoDisable.get()) {
             List<BlockPos> positions = plannedPositions;
             if (!positions.isEmpty() && allBlocksPlaced(positions)) {
+                // Increment build counter when build completes
+                incrementBuildCounter();
+                
                 Timer timer = Modules.get().get(Timer.class);
                 if (timer != null) timer.setOverride(Timer.OFF);
                 toggle();
@@ -580,11 +628,23 @@ public class AutoBuilder extends Module {
         List<BlockPos> positions = new ArrayList<>();
         if (playerPos == null) return positions;
 
+        // Apply forward offset based on facing direction
+        int forwardOff = offsetForward.get();
+        int offsetX = 0;
+        int offsetZ = 0;
+        switch (facing) {
+            case NORTH -> offsetZ = -forwardOff;
+            case SOUTH -> offsetZ =  forwardOff;
+            case EAST  -> offsetX =  forwardOff;
+            case WEST  -> offsetX = -forwardOff;
+            default    -> offsetZ = -forwardOff;
+        }
+
         if (buildMode.get() == BuildMode.Vertical) {
             int baseY = playerPos.getY() + offsetY.get() + 2;
 
-            int baseX = playerPos.getX();
-            int baseZ = playerPos.getZ();
+            int baseX = playerPos.getX() + offsetX;
+            int baseZ = playerPos.getZ() + offsetZ;
 
             int step = (verticalAnchor.get() == VerticalAnchor.InFront) ? 2 : -2;   // offset for vertical placement
 
@@ -625,8 +685,8 @@ public class AutoBuilder extends Module {
                     int forwardOffset = row - 2;
                     int sideOffset = col - 2;
 
-                    int x = playerPos.getX();
-                    int z = playerPos.getZ();
+                    int x = playerPos.getX() + offsetX;
+                    int z = playerPos.getZ() + offsetZ;
 
                     switch (facing) {
                         case NORTH -> { z -= forwardOffset; x += sideOffset; }
@@ -694,6 +754,41 @@ public class AutoBuilder extends Module {
         } catch (Throwable ignored) {}
     }
 
+    /** Load build counter from file. */
+    private void loadBuildCounter() {
+        try {
+            Path file = getCounterFilePath();
+            if (!Files.exists(file)) return;
+            
+            String json = Files.readString(file, StandardCharsets.UTF_8);
+            AutoBuilderStatsFile data = GSON.fromJson(json, AutoBuilderStatsFile.class);
+            if (data != null) {
+                totalBuildsCompleted = data.totalBuildsCompleted;
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** Save build counter to file. */
+    private void saveBuildCounter() {
+        try {
+            Path file = getCounterFilePath();
+            Files.createDirectories(file.getParent());
+            
+            AutoBuilderStatsFile data = new AutoBuilderStatsFile();
+            data.totalBuildsCompleted = totalBuildsCompleted;
+            
+            Files.writeString(file, GSON.toJson(data), StandardCharsets.UTF_8);
+        } catch (Throwable ignored) {}
+    }
+
+    /** Increment build counter and save. */
+    private void incrementBuildCounter() {
+        if (buildCountedThisSession) return;
+        buildCountedThisSession = true;
+        totalBuildsCompleted++;
+        saveBuildCounter();
+    }
+
     // Below is logic specific to warnings regarding block count
     private void warnAutoBuilder(String msg) {
         MutableText t = Text.literal("[")
@@ -737,6 +832,9 @@ public class AutoBuilder extends Module {
         if (!autoDisable.get()) return;
         if (plannedPositions.isEmpty()) return;
         if (!allBlocksPlaced(plannedPositions)) return;
+
+        // Increment build counter when build completes
+        incrementBuildCounter();
 
         Timer timer = Modules.get().get(Timer.class);
         if (timer != null) timer.setOverride(Timer.OFF);
