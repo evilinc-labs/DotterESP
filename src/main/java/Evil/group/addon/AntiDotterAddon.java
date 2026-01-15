@@ -7,6 +7,7 @@ import Evil.group.addon.modules.AutoBuilder;
 import Evil.group.addon.modules.FreeYaw;
 import Evil.group.addon.modules.BetterAutoSign;
 import Evil.group.addon.modules.AutoMapModule;
+import Evil.group.addon.modules.AutoCartographyModule;
 import meteordevelopment.meteorclient.addons.GithubRepo;
 import meteordevelopment.meteorclient.addons.MeteorAddon;
 import meteordevelopment.meteorclient.systems.hud.Hud;
@@ -31,6 +32,7 @@ public class AntiDotterAddon extends MeteorAddon {
         Modules.get().add(new FreeYaw());
         Modules.get().add(new BetterAutoSign());
         Modules.get().add(new AutoMapModule());
+        Modules.get().add(new AutoCartographyModule());
 
         // HUD elements
         Hud.get().register(BuildCounterHud.INFO);

@@ -1,13 +1,29 @@
 package Evil.group.addon.modules;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+import java.util.concurrent.TimeUnit;
+
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
+
 import Evil.group.addon.AntiDotterAddon;
 import Evil.group.addon.utils.HotbarSupply;
-import meteordevelopment.meteorclient.systems.modules.Modules;
+import baritone.api.BaritoneAPI;
+import baritone.api.IBaritone;
+import baritone.api.pathing.goals.Goal;
+import baritone.api.pathing.goals.GoalXZ;
 import meteordevelopment.meteorclient.events.world.TickEvent;
-import meteordevelopment.meteorclient.settings.*;
+import meteordevelopment.meteorclient.settings.BoolSetting;
+import meteordevelopment.meteorclient.settings.DoubleSetting;
+import meteordevelopment.meteorclient.settings.EnumSetting;
+import meteordevelopment.meteorclient.settings.IntSetting;
+import meteordevelopment.meteorclient.settings.Setting;
+import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
+import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.utils.entity.SortPriority;
 import meteordevelopment.meteorclient.utils.entity.TargetUtils;
 import meteordevelopment.meteorclient.utils.player.FindItemResult;
@@ -15,28 +31,23 @@ import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.meteorclient.utils.player.PlayerUtils;
 import meteordevelopment.meteorclient.utils.player.Rotations;
 import meteordevelopment.orbit.EventHandler;
+import net.minecraft.block.Block;
+import net.minecraft.block.Blocks;
+import net.minecraft.block.ShulkerBoxBlock;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.decoration.ItemFrameEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
-import net.minecraft.network.packet.c2s.play.PlayerInteractEntityC2SPacket;
-import net.minecraft.util.Hand;
-import net.minecraft.util.math.Vec3d;
-import net.minecraft.block.Block;
-import net.minecraft.block.Blocks;
-import net.minecraft.block.ShulkerBoxBlock;
 import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerInteractBlockC2SPacket;
+import net.minecraft.network.packet.c2s.play.PlayerInteractEntityC2SPacket;
 import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
+import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Box;
-
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
+import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.Vec3d;
 
 public class AutoMapModule extends Module {
     private final Cache<Integer, Integer> pending = CacheBuilder.newBuilder().expireAfterWrite(250, TimeUnit.MILLISECONDS).build();
@@ -113,6 +124,92 @@ private final Setting<Boolean> keepRunningNoFrames = sgGeneral.add(new BoolSetti
     .build()
 );
 
+private final Setting<Boolean> onlyPlaceEmptyFrames = sgGeneral.add(new BoolSetting.Builder()
+    .name("only-place-empty-frames")
+    .description("If enabled, only place maps in empty frames. Will not break/replace existing maps.")
+    .defaultValue(false)
+    .build()
+);
+
+    // -----------------------------
+    // Baritone Auto-Explore settings
+    // -----------------------------
+    private final SettingGroup sgBaritone = settings.createGroup("Baritone Explore");
+
+    private final Setting<Boolean> enableAutoExplore = sgBaritone.add(new BoolSetting.Builder()
+        .name("enable-auto-explore")
+        .description("Enable Baritone random point navigation within radius.")
+        .defaultValue(false)
+        .onChanged(enabled -> {
+            if (enabled && isActive()) {
+                startBaritoneExplore();
+            } else if (!enabled) {
+                stopBaritoneExplore();
+            }
+        })
+        .build()
+    );
+
+    private final Setting<Integer> exploreRadius = sgBaritone.add(new IntSetting.Builder()
+        .name("explore-radius")
+        .description("Maximum distance in blocks from origin to explore.")
+        .defaultValue(2000)
+        .min(100)
+        .max(100000)
+        .sliderRange(100, 10000)
+        .visible(() -> enableAutoExplore.get())
+        .build()
+    );
+
+    private final Setting<Integer> originX = sgBaritone.add(new IntSetting.Builder()
+        .name("origin-x")
+        .description("X coordinate of exploration origin.")
+        .defaultValue(0)
+        .range(-30000000, 30000000)
+        .sliderRange(-10000, 10000)
+        .visible(() -> enableAutoExplore.get())
+        .build()
+    );
+
+    private final Setting<Integer> originZ = sgBaritone.add(new IntSetting.Builder()
+        .name("origin-z")
+        .description("Z coordinate of exploration origin.")
+        .defaultValue(0)
+        .range(-30000000, 30000000)
+        .sliderRange(-10000, 10000)
+        .visible(() -> enableAutoExplore.get())
+        .build()
+    );
+
+    private final Setting<Integer> goalReachedDistance = sgBaritone.add(new IntSetting.Builder()
+        .name("goal-reached-distance")
+        .description("Distance threshold to consider a goal reached (blocks).")
+        .defaultValue(5)
+        .min(1)
+        .max(50)
+        .sliderRange(1, 20)
+        .visible(() -> enableAutoExplore.get())
+        .build()
+    );
+
+    private final Setting<Integer> checkIntervalTicks = sgBaritone.add(new IntSetting.Builder()
+        .name("check-interval")
+        .description("How often to check if goal is reached (in ticks).")
+        .defaultValue(20)
+        .min(1)
+        .max(200)
+        .sliderRange(1, 100)
+        .visible(() -> enableAutoExplore.get())
+        .build()
+    );
+
+    // Baritone state tracking
+    private IBaritone baritone;
+    private boolean baritoneExploreActive = false;
+    private int exploreTickCounter = 0;
+    private BlockPos currentTargetPos = null;
+    private final Random random = new Random();
+
     private static final int MAX_PLACES_PER_WINDOW = 9;
     private static final long PLACE_WINDOW_MS = 300;
     private final ArrayDeque<Long> placeTimes = new ArrayDeque<>();
@@ -136,6 +233,12 @@ private boolean warnedOutOfFrames = false;
     @EventHandler
     private void onTick(TickEvent.Pre ignored) {
         ticksSinceLastPlace++; 
+        
+        // Handle Baritone auto-explore if enabled
+        if (enableAutoExplore.get()) {
+            handleBaritoneExplore();
+        }
+        
                 // Ensure we have a filled map in the hotbar; if not, try to pull one in from inventory.
         FindItemResult itemResult = InvUtils.findInHotbar(Items.FILLED_MAP);
         if (!itemResult.found()) {
@@ -192,7 +295,7 @@ if (placeFrames.get() && !haveAnyFrames) {
                 }
                 pending.put(itemFrame.getId(), 1);
                 return;
-            } else if (stack.getItem() != Items.FILLED_MAP || !InvUtils.findInHotbar(item -> item.getItem() == Items.FILLED_MAP && item.getComponents().equals(itemFrame.getHeldItemStack().getComponents())).found()) {
+            } else if (!onlyPlaceEmptyFrames.get() && (stack.getItem() != Items.FILLED_MAP || !InvUtils.findInHotbar(item -> item.getItem() == Items.FILLED_MAP && item.getComponents().equals(itemFrame.getHeldItemStack().getComponents())).found())) {
                 mc.player.swingHand(Hand.MAIN_HAND);
                 mc.interactionManager.attackEntity(mc.player, itemFrame);
                 pending.put(itemFrame.getId(), 1);
@@ -406,6 +509,16 @@ public void onActivate() {
             toggledFreeYaw = true;
         }
     }
+    
+    // Initialize Baritone if auto-explore is enabled
+    if (enableAutoExplore.get()) {
+        baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
+        if (baritone != null) {
+            startBaritoneExplore();
+        } else {
+            error("Baritone not found. Auto-explore disabled.");
+        }
+    }
 }
 
 @Override
@@ -423,6 +536,128 @@ public void onDeactivate() {
         restoreAfterNextMapPlace = false;
         restoreHotbarSlot = -1;
     }
+    
+    // Stop Baritone exploration
+    stopBaritoneExplore();
 }
+
+    // -----------------------------
+    // Baritone Random Point Navigation Methods
+    // -----------------------------
+    
+    private void handleBaritoneExplore() {
+        if (mc.player == null || baritone == null) return;
+        
+        exploreTickCounter++;
+        
+        // Only check periodically
+        if (exploreTickCounter >= checkIntervalTicks.get()) {
+            exploreTickCounter = 0;
+            checkAndUpdateGoal();
+        }
+    }
+    
+    private void checkAndUpdateGoal() {
+        if (mc.player == null) return;
+        
+        BlockPos playerPos = mc.player.getBlockPos();
+        
+        // If no target exists or target has been reached, generate a new one
+        if (currentTargetPos == null || hasReachedGoal(playerPos, currentTargetPos)) {
+            if (currentTargetPos != null) {
+                info("Reached target (" + currentTargetPos.getX() + ", " + currentTargetPos.getZ() + "). Selecting new destination...");
+            }
+            generateAndGoToRandomPoint();
+        }
+        
+        // Check if player exceeded radius boundary - if so, generate new point
+        int dx = playerPos.getX() - originX.get();
+        int dz = playerPos.getZ() - originZ.get();
+        double distanceSq = dx * dx + dz * dz;
+        double radiusSq = exploreRadius.get() * exploreRadius.get();
+        
+        if (distanceSq > radiusSq) {
+            int currentDist = (int)Math.sqrt(distanceSq);
+            warning("Exceeded exploration radius (" + currentDist + " > " + exploreRadius.get() + "). Selecting new point within bounds...");
+            generateAndGoToRandomPoint();
+        }
+    }
+    
+    private boolean hasReachedGoal(BlockPos playerPos, BlockPos targetPos) {
+        if (targetPos == null) return true;
+        
+        // Check if we're within the goal-reached distance threshold
+        int dx = playerPos.getX() - targetPos.getX();
+        int dz = playerPos.getZ() - targetPos.getZ();
+        double distSq = dx * dx + dz * dz;
+        double thresholdSq = goalReachedDistance.get() * goalReachedDistance.get();
+        
+        // Also check if Baritone has stopped pathing (goal reached or stuck)
+        boolean notPathing = !baritone.getPathingBehavior().isPathing();
+        
+        return distSq <= thresholdSq || notPathing;
+    }
+    
+    private void generateAndGoToRandomPoint() {
+        if (baritone == null) return;
+        
+        BlockPos randomPoint = generateRandomPointInRadius();
+        currentTargetPos = randomPoint;
+        
+        // Cancel any existing path
+        baritone.getPathingBehavior().cancelEverything();
+        
+        // Set new goal using CustomGoalProcess
+        Goal goal = new GoalXZ(randomPoint.getX(), randomPoint.getZ());
+        baritone.getCustomGoalProcess().setGoalAndPath(goal);
+        
+        info("Navigating to random point: (" + randomPoint.getX() + ", " + randomPoint.getZ() + ")");
+    }
+    
+    private BlockPos generateRandomPointInRadius() {
+        int radius = exploreRadius.get();
+        int originXVal = originX.get();
+        int originZVal = originZ.get();
+        
+        // Generate random point within circle
+        // Use polar coordinates to ensure uniform distribution
+        double angle = random.nextDouble() * 2 * Math.PI;
+        double distance = Math.sqrt(random.nextDouble()) * radius; // sqrt for uniform distribution
+        
+        int x = originXVal + (int)(distance * Math.cos(angle));
+        int z = originZVal + (int)(distance * Math.sin(angle));
+        
+        // Get player's current Y level (Baritone will handle vertical navigation)
+        int y = mc.player != null ? mc.player.getBlockPos().getY() : 64;
+        
+        return new BlockPos(x, y, z);
+    }
+    
+    private void startBaritoneExplore() {
+        if (baritone == null) {
+            baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
+            if (baritone == null) {
+                error("Baritone not found.");
+                return;
+            }
+        }
+        
+        // Cancel any existing tasks
+        baritone.getPathingBehavior().cancelEverything();
+        
+        // Generate first random point
+        generateAndGoToRandomPoint();
+        baritoneExploreActive = true;
+        info("Baritone random navigation started with " + exploreRadius.get() + " block radius from (" + originX.get() + ", " + originZ.get() + ").");
+    }
+    
+    private void stopBaritoneExplore() {
+        if (baritone != null && baritoneExploreActive) {
+            baritone.getPathingBehavior().cancelEverything();
+            baritoneExploreActive = false;
+            currentTargetPos = null;
+            info("Baritone navigation stopped.");
+        }
+    }
 
 }

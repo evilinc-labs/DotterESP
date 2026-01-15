@@ -3,7 +3,7 @@ plugins {
 }
 
 base {
-    archivesBaseName = project.archives_base_name
+    archivesName = project.archives_base_name
     version = project.mod_version
     group = project.maven_group
 }
@@ -25,8 +25,11 @@ dependencies {
     mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
 
-    // Meteor
+    // Meteor (includes Baritone at runtime)
     modImplementation "meteordevelopment:meteor-client:${project.minecraft_version}-SNAPSHOT"
+    
+    // Baritone API for compile-time only (from local libs folder)
+    compileOnly files('libs/baritone-api-fabric-1.13.1.jar')
 }
 
 tasks {
@@ -43,7 +46,7 @@ tasks {
 
     jar {
         from("LICENSE") {
-            rename { "${it}_${project.base.archivesBaseName}" }
+            rename { "${it}_${project.base.archivesName}" }
         }
     }
 
