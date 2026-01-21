@@ -52,6 +52,8 @@ public class AutoBuilder extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
     private final SettingGroup sgRender = settings.createGroup("Render");
 
+    private static final int GridSide = 7;
+
     private final Setting<BuildMode> buildMode = sgGeneral.add(new EnumSetting.Builder<BuildMode>()
         .name("build-mode")
         .description("Vertical builds a wall, Horizontal builds on the ground.")
@@ -137,11 +139,27 @@ public class AutoBuilder extends Module {
         .build()
     );
 
+    private final Setting<Integer> offsetX = sgGeneral.add(new IntSetting.Builder()
+        .name("offset-X")
+        .description("X offset from player.")
+        .defaultValue(0)
+        .sliderRange(-5, 5)
+        .build()
+    );
+
     private final Setting<Integer> offsetY = sgGeneral.add(new IntSetting.Builder()
         .name("offset-y")
         .description("Y offset from player.")
         .defaultValue(0)
-        .sliderRange(-3, 3)
+        .sliderRange(-5, 5)
+        .build()
+    );
+
+    private final Setting<Integer> offsetZ = sgGeneral.add(new IntSetting.Builder()
+        .name("offset-Z")
+        .description("Z offset from player.")
+        .defaultValue(0)
+        .sliderRange(-5, 5)
         .build()
     );
 
@@ -228,7 +246,7 @@ public class AutoBuilder extends Module {
     private static final long PLACE_WINDOW_MS = 300;
 
     // State
-    private final boolean[][] grid = new boolean[5][5];
+    private final boolean[][] grid = new boolean[GridSide][GridSide];
     private final ArrayDeque<Long> placeTimes = new ArrayDeque<>();
     private List<BlockPos> plannedPositions = List.of();
     private BlockPos activationPlayerPos = null;
@@ -240,7 +258,7 @@ public class AutoBuilder extends Module {
     private boolean buildCountedThisSession = false;
 
     public AutoBuilder() {
-        super(AntiDotterAddon.CATEGORY, "auto-builder", "Builds 5x5 patterns. Made for 2b2t.");
+        super(AntiDotterAddon.CATEGORY, "auto-builder", String.format("Builds %dx%d patterns. Made for 2b2t.", GridSide, GridSide));
         tryLoadPatternOnInit();
         loadBuildCounter();
     }
@@ -256,8 +274,8 @@ public class AutoBuilder extends Module {
         WTable table = theme.table();
         list.add(table);
 
-        for (int row = 0; row < 5; row++) {
-            for (int col = 0; col < 5; col++) {
+        for (int row = 0; row < GridSide; row++) {
+            for (int col = 0; col < GridSide; col++) {
                 final int r = row, c = col;
                 WCheckbox cb = table.add(theme.checkbox(grid[r][c])).widget();
                 cb.action = () -> grid[r][c] = cb.checked;
@@ -463,7 +481,7 @@ public class AutoBuilder extends Module {
         if (playerPos == null) return positions;
 
         int forwardOff = offsetForward.get();
-        int offX = 0, offZ = 0;
+        int offX = offsetX.get(), offZ = offsetZ.get();
         switch (facing) {
             case NORTH -> offZ = -forwardOff;
             case SOUTH -> offZ = forwardOff;
@@ -486,8 +504,8 @@ public class AutoBuilder extends Module {
                 default -> baseZ -= step;
             }
 
-            for (int row = 0; row < 5; row++) {
-                for (int col = 0; col < 5; col++) {
+            for (int row = 0; row < GridSide; row++) {
+                for (int col = 0; col < GridSide; col++) {
                     if (!grid[row][col]) continue;
                     int y = baseY - row;
                     int hOff = col - 2;
@@ -502,8 +520,8 @@ public class AutoBuilder extends Module {
             }
         } else {
             int y = playerPos.getY() + offsetY.get();
-            for (int row = 0; row < 5; row++) {
-                for (int col = 0; col < 5; col++) {
+            for (int row = 0; row < GridSide; row++) {
+                for (int col = 0; col < GridSide; col++) {
                     if (!grid[row][col]) continue;
                     int fOff = row - 2, sOff = col - 2;
                     int x = playerPos.getX() + offX;
@@ -565,7 +583,7 @@ public class AutoBuilder extends Module {
     }
 
     // File I/O
-    private static class AutoBuilderPatternFile { int version = 1; boolean[][] grid = new boolean[5][5]; }
+    private static class AutoBuilderPatternFile { int version = 1; boolean[][] grid = new boolean[GridSide][GridSide]; }
     private static class AutoBuilderStatsFile { int version = 1; int totalBuildsCompleted = 0; }
 
     private static Path getPatternFilePath() {
@@ -586,7 +604,7 @@ public class AutoBuilder extends Module {
         try {
             var data = GSON.fromJson(Files.readString(file, StandardCharsets.UTF_8), AutoBuilderPatternFile.class);
             if (data != null && data.grid != null) {
-                for (int r = 0; r < 5; r++) for (int c = 0; c < 5; c++)
+                for (int r = 0; r < GridSide; r++) for (int c = 0; c < GridSide; c++)
                     grid[r][c] = r < data.grid.length && data.grid[r] != null && c < data.grid[r].length && data.grid[r][c];
             }
         } catch (JsonSyntaxException | java.io.IOException ignored) {}
@@ -597,7 +615,7 @@ public class AutoBuilder extends Module {
             Path f = getPatternFilePath();
             Files.createDirectories(f.getParent());
             var data = new AutoBuilderPatternFile();
-            for (int r = 0; r < 5; r++) System.arraycopy(grid[r], 0, data.grid[r], 0, 5);
+            for (int r = 0; r < GridSide; r++) System.arraycopy(grid[r], 0, data.grid[r], 0, GridSide);
             Files.writeString(f, GSON.toJson(data), StandardCharsets.UTF_8);
         } catch (Throwable ignored) {}
     }
