@@ -34,6 +34,7 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.item.BlockItem;
+import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerInteractBlockC2SPacket;
@@ -80,8 +81,10 @@ class Random extends BlockSelectionStrategy {
 
     @Override
     public boolean isBuildBlock(ItemStack stack) {
-        boolean isInPool = ab.blockPool.get().contains(((BlockItem)stack.getItem()).getBlock());
-        return stack.getItem() instanceof BlockItem && isInPool;
+        Item item = stack.getItem();
+        if (!(item instanceof BlockItem)) { return false; }
+        Block b = ((BlockItem) item).getBlock();
+        return ab.blockPool.get().contains(b);
     }
 }
 
@@ -213,6 +216,15 @@ public class AutoBuilder extends Module {
         .name("auto-orientation")
         .description("Build faces the direction you're looking at when activated.")
         .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Integer> numSkips = sgGeneral.add(new IntSetting.Builder()
+        .name("num-skips")
+        .description("Number of times during a placement to randomly skip blocks - e.g. 2 will randomly skip two blocks from the pattern.")
+        .defaultValue(0)
+        .range(0, 7)
+        .sliderRange(0, 7)
         .build()
     );
 
@@ -616,6 +628,12 @@ public class AutoBuilder extends Module {
                 }
             }
         }
+
+        // Remove random placements if configured
+        for (int i = 0; i < numSkips.get(); i++) {
+            positions.remove((int) (Math.random() * positions.size()));
+        }
+
         return positions;
     }
 
