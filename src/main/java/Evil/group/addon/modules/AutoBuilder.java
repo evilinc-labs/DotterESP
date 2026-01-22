@@ -34,6 +34,7 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.item.BlockItem;
+import net.minecraft.item.ItemStack;
 import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerInteractBlockC2SPacket;
 import net.minecraft.text.MutableText;
@@ -45,9 +46,66 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
+abstract class BlockSelectionStrategy {
+    protected final AutoBuilder ab;
+    protected BlockSelectionStrategy(AutoBuilder ab) { this.ab = ab; }
+    public abstract FindItemResult findBlock();
+    public abstract boolean isBuildBlock(ItemStack stack);
+}
+
+class Single extends BlockSelectionStrategy {
+    public Single(AutoBuilder ab) { super(ab); }
+
+    @Override
+    public FindItemResult findBlock() {
+        Block sel = ab.blockToUse.get();
+        return InvUtils.findInHotbar(s -> s.getItem() instanceof BlockItem bi && bi.getBlock() == sel);
+    }
+
+    @Override
+    public boolean isBuildBlock(ItemStack stack) {
+        return stack.getItem() instanceof BlockItem bi && bi.getBlock() == ab.blockToUse.get();
+    }
+}
+
+class Random extends BlockSelectionStrategy {
+    public Random(AutoBuilder ab) { super(ab); }
+    // Select random block from pool and in hotbar for placement.
+    @Override
+    public FindItemResult findBlock() {
+        int rnd  = (int) (Math.random() * ab.blockPool.get().size());
+        Block sel = ab.blockPool.get().get(rnd);
+        return InvUtils.findInHotbar(s -> s.getItem() instanceof BlockItem bi && bi.getBlock() == sel);
+    }
+
+    @Override
+    public boolean isBuildBlock(ItemStack stack) {
+        boolean isInPool = ab.blockPool.get().contains(((BlockItem)stack.getItem()).getBlock());
+        return stack.getItem() instanceof BlockItem && isInPool;
+    }
+}
+
 public class AutoBuilder extends Module {
     public enum BuildMode { Vertical, Horizontal }
     public enum VerticalAnchor { InFront, Behind }
+
+    // Enum backed factory so we can fetch the intended strategy transparently.
+    public enum BlockSelectionStrategyOption {
+        Single(Single::new),
+        Random(Random::new);
+
+        private final java.util.function.Function<AutoBuilder, BlockSelectionStrategy> factory;
+        BlockSelectionStrategyOption(java.util.function.Function<AutoBuilder, BlockSelectionStrategy> factory) {
+            this.factory = factory;
+        }
+        BlockSelectionStrategy create(AutoBuilder ab) { return factory.apply(ab); }
+    }
+
+    // Delegate so isBuildBlock can be passed around as a higher order function.
+    private boolean isBuildBlock(ItemStack stack) {
+        return getSelectedStrategy().isBuildBlock(stack);
+    }
+
 
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
     private final SettingGroup sgRender = settings.createGroup("Render");
@@ -69,12 +127,31 @@ public class AutoBuilder extends Module {
         .build()
     );
 
-    private final Setting<Block> blockToUse = sgGeneral.add(new BlockSetting.Builder()
+    private final Setting<BlockSelectionStrategyOption> blockSelectionStrategySetting = sgGeneral.add(new EnumSetting.Builder<BlockSelectionStrategyOption>()
+        .name("block-selection-mode")
+        .description("How blocks are chosen for placement.")
+        .defaultValue(BlockSelectionStrategyOption.Single)
+        .build()
+    );
+
+    public final Setting<Block> blockToUse = sgGeneral.add(new BlockSetting.Builder()
         .name("block")
-        .description("Block to use for building.")
+        .description("Block to use for building when in single-block mode.")
         .defaultValue(Blocks.OBSIDIAN)
         .build()
     );
+
+    public final Setting<List<Block>> blockPool = sgGeneral.add(new BlockListSetting.Builder()
+        .name("block-pool")
+        .description("List of allowed blocks select from when using multi-block modes.")
+        .defaultValue(Blocks.OBSIDIAN)
+        .build()
+    );
+
+    // Fetches the selected strategy
+    private BlockSelectionStrategy getSelectedStrategy() {
+        return blockSelectionStrategySetting.get().create(this);
+    }
 
     private final Setting<Integer> delayMs = sgGeneral.add(new IntSetting.Builder()
         .name("delay-ms")
@@ -367,6 +444,8 @@ public class AutoBuilder extends Module {
     }
 
     private void tryPlace() {
+        BlockSelectionStrategy bs = getSelectedStrategy();
+
         if (mc.player == null || mc.world == null || mc.interactionManager == null) return;
 
         long now = System.currentTimeMillis();
@@ -379,7 +458,7 @@ public class AutoBuilder extends Module {
             BlockPos pos = plannedPositions.get(currentIndex);
 
             if (mc.world.getBlockState(pos).isReplaceable() && isInRange(pos)) {
-                FindItemResult block = findBlock();
+                FindItemResult block = bs.findBlock();
                 if (block.found()) {
                     if (autoReplenish.get()) {
                         HotbarSupply.ensureHotbarStack(this::isBuildBlock, replenishThreshold.get(), false);
@@ -551,15 +630,6 @@ public class AutoBuilder extends Module {
 
     private boolean isInRange(BlockPos pos) {
         return mc.player != null && mc.player.getEyePos().distanceTo(Vec3d.ofCenter(pos)) <= placeRange.get();
-    }
-
-    private FindItemResult findBlock() {
-        Block sel = blockToUse.get();
-        return InvUtils.findInHotbar(s -> s.getItem() instanceof BlockItem bi && bi.getBlock() == sel);
-    }
-
-    private boolean isBuildBlock(net.minecraft.item.ItemStack stack) {
-        return stack.getItem() instanceof BlockItem bi && bi.getBlock() == blockToUse.get();
     }
 
     private boolean hotbarHasEnoughBuildBlocksFor(int need) {
