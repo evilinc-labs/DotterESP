@@ -34,6 +34,8 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.item.BlockItem;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
 import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerInteractBlockC2SPacket;
 import net.minecraft.text.MutableText;
@@ -45,12 +47,73 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
+abstract class BlockSelectionStrategy {
+    protected final AutoBuilder ab;
+    protected BlockSelectionStrategy(AutoBuilder ab) { this.ab = ab; }
+    public abstract FindItemResult findBlock();
+    public abstract boolean isBuildBlock(ItemStack stack);
+}
+
+class Single extends BlockSelectionStrategy {
+    public Single(AutoBuilder ab) { super(ab); }
+
+    @Override
+    public FindItemResult findBlock() {
+        Block sel = ab.blockToUse.get();
+        return InvUtils.findInHotbar(s -> s.getItem() instanceof BlockItem bi && bi.getBlock() == sel);
+    }
+
+    @Override
+    public boolean isBuildBlock(ItemStack stack) {
+        return stack.getItem() instanceof BlockItem bi && bi.getBlock() == ab.blockToUse.get();
+    }
+}
+
+class Random extends BlockSelectionStrategy {
+    public Random(AutoBuilder ab) { super(ab); }
+    // Select random block from pool and in hotbar for placement.
+    @Override
+    public FindItemResult findBlock() {
+        int rnd  = (int) (Math.random() * ab.blockPool.get().size());
+        Block sel = ab.blockPool.get().get(rnd);
+        return InvUtils.findInHotbar(s -> s.getItem() instanceof BlockItem bi && bi.getBlock() == sel);
+    }
+
+    @Override
+    public boolean isBuildBlock(ItemStack stack) {
+        Item item = stack.getItem();
+        if (!(item instanceof BlockItem)) { return false; }
+        Block b = ((BlockItem) item).getBlock();
+        return ab.blockPool.get().contains(b);
+    }
+}
+
 public class AutoBuilder extends Module {
     public enum BuildMode { Vertical, Horizontal }
     public enum VerticalAnchor { InFront, Behind }
 
+    // Enum backed factory so we can fetch the intended strategy transparently.
+    public enum BlockSelectionStrategyOption {
+        Single(Single::new),
+        Random(Random::new);
+
+        private final java.util.function.Function<AutoBuilder, BlockSelectionStrategy> factory;
+        BlockSelectionStrategyOption(java.util.function.Function<AutoBuilder, BlockSelectionStrategy> factory) {
+            this.factory = factory;
+        }
+        BlockSelectionStrategy create(AutoBuilder ab) { return factory.apply(ab); }
+    }
+
+    // Delegate so isBuildBlock can be passed around as a higher order function.
+    private boolean isBuildBlock(ItemStack stack) {
+        return getSelectedStrategy().isBuildBlock(stack);
+    }
+
+
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
     private final SettingGroup sgRender = settings.createGroup("Render");
+
+    private static final int GridSide = 7;
 
     private final Setting<BuildMode> buildMode = sgGeneral.add(new EnumSetting.Builder<BuildMode>()
         .name("build-mode")
@@ -67,12 +130,31 @@ public class AutoBuilder extends Module {
         .build()
     );
 
-    private final Setting<Block> blockToUse = sgGeneral.add(new BlockSetting.Builder()
+    private final Setting<BlockSelectionStrategyOption> blockSelectionStrategySetting = sgGeneral.add(new EnumSetting.Builder<BlockSelectionStrategyOption>()
+        .name("block-selection-mode")
+        .description("How blocks are chosen for placement.")
+        .defaultValue(BlockSelectionStrategyOption.Single)
+        .build()
+    );
+
+    public final Setting<Block> blockToUse = sgGeneral.add(new BlockSetting.Builder()
         .name("block")
-        .description("Block to use for building.")
+        .description("Block to use for building when in single-block mode.")
         .defaultValue(Blocks.OBSIDIAN)
         .build()
     );
+
+    public final Setting<List<Block>> blockPool = sgGeneral.add(new BlockListSetting.Builder()
+        .name("block-pool")
+        .description("List of allowed blocks select from when using multi-block modes.")
+        .defaultValue(Blocks.OBSIDIAN)
+        .build()
+    );
+
+    // Fetches the selected strategy
+    private BlockSelectionStrategy getSelectedStrategy() {
+        return blockSelectionStrategySetting.get().create(this);
+    }
 
     private final Setting<Integer> delayMs = sgGeneral.add(new IntSetting.Builder()
         .name("delay-ms")
@@ -137,11 +219,36 @@ public class AutoBuilder extends Module {
         .build()
     );
 
+    private final Setting<Integer> numSkips = sgGeneral.add(new IntSetting.Builder()
+        .name("num-skips")
+        .description("Number of times during a placement to randomly skip blocks - e.g. 2 will randomly skip two blocks from the pattern.")
+        .defaultValue(0)
+        .range(0, 7)
+        .sliderRange(0, 7)
+        .build()
+    );
+
+    private final Setting<Integer> offsetX = sgGeneral.add(new IntSetting.Builder()
+        .name("offset-X")
+        .description("X offset from player.")
+        .defaultValue(0)
+        .sliderRange(-5, 5)
+        .build()
+    );
+
     private final Setting<Integer> offsetY = sgGeneral.add(new IntSetting.Builder()
         .name("offset-y")
         .description("Y offset from player.")
         .defaultValue(0)
-        .sliderRange(-3, 3)
+        .sliderRange(-5, 5)
+        .build()
+    );
+
+    private final Setting<Integer> offsetZ = sgGeneral.add(new IntSetting.Builder()
+        .name("offset-Z")
+        .description("Z offset from player.")
+        .defaultValue(0)
+        .sliderRange(-5, 5)
         .build()
     );
 
@@ -228,7 +335,7 @@ public class AutoBuilder extends Module {
     private static final long PLACE_WINDOW_MS = 300;
 
     // State
-    private final boolean[][] grid = new boolean[5][5];
+    private final boolean[][] grid = new boolean[GridSide][GridSide];
     private final ArrayDeque<Long> placeTimes = new ArrayDeque<>();
     private List<BlockPos> plannedPositions = List.of();
     private BlockPos activationPlayerPos = null;
@@ -240,7 +347,7 @@ public class AutoBuilder extends Module {
     private boolean buildCountedThisSession = false;
 
     public AutoBuilder() {
-        super(AntiDotterAddon.CATEGORY, "auto-builder", "Builds 5x5 patterns. Made for 2b2t.");
+        super(AntiDotterAddon.CATEGORY, "auto-builder", String.format("Builds %dx%d patterns. Made for 2b2t.", GridSide, GridSide));
         tryLoadPatternOnInit();
         loadBuildCounter();
     }
@@ -256,8 +363,8 @@ public class AutoBuilder extends Module {
         WTable table = theme.table();
         list.add(table);
 
-        for (int row = 0; row < 5; row++) {
-            for (int col = 0; col < 5; col++) {
+        for (int row = 0; row < GridSide; row++) {
+            for (int col = 0; col < GridSide; col++) {
                 final int r = row, c = col;
                 WCheckbox cb = table.add(theme.checkbox(grid[r][c])).widget();
                 cb.action = () -> grid[r][c] = cb.checked;
@@ -349,6 +456,8 @@ public class AutoBuilder extends Module {
     }
 
     private void tryPlace() {
+        BlockSelectionStrategy bs = getSelectedStrategy();
+
         if (mc.player == null || mc.world == null || mc.interactionManager == null) return;
 
         long now = System.currentTimeMillis();
@@ -361,7 +470,7 @@ public class AutoBuilder extends Module {
             BlockPos pos = plannedPositions.get(currentIndex);
 
             if (mc.world.getBlockState(pos).isReplaceable() && isInRange(pos)) {
-                FindItemResult block = findBlock();
+                FindItemResult block = bs.findBlock();
                 if (block.found()) {
                     if (autoReplenish.get()) {
                         HotbarSupply.ensureHotbarStack(this::isBuildBlock, replenishThreshold.get(), false);
@@ -463,7 +572,7 @@ public class AutoBuilder extends Module {
         if (playerPos == null) return positions;
 
         int forwardOff = offsetForward.get();
-        int offX = 0, offZ = 0;
+        int offX = offsetX.get(), offZ = offsetZ.get();
         switch (facing) {
             case NORTH -> offZ = -forwardOff;
             case SOUTH -> offZ = forwardOff;
@@ -486,8 +595,8 @@ public class AutoBuilder extends Module {
                 default -> baseZ -= step;
             }
 
-            for (int row = 0; row < 5; row++) {
-                for (int col = 0; col < 5; col++) {
+            for (int row = 0; row < GridSide; row++) {
+                for (int col = 0; col < GridSide; col++) {
                     if (!grid[row][col]) continue;
                     int y = baseY - row;
                     int hOff = col - 2;
@@ -502,8 +611,8 @@ public class AutoBuilder extends Module {
             }
         } else {
             int y = playerPos.getY() + offsetY.get();
-            for (int row = 0; row < 5; row++) {
-                for (int col = 0; col < 5; col++) {
+            for (int row = 0; row < GridSide; row++) {
+                for (int col = 0; col < GridSide; col++) {
                     if (!grid[row][col]) continue;
                     int fOff = row - 2, sOff = col - 2;
                     int x = playerPos.getX() + offX;
@@ -519,6 +628,12 @@ public class AutoBuilder extends Module {
                 }
             }
         }
+
+        // Remove random placements if configured
+        for (int i = 0; i < numSkips.get(); i++) {
+            positions.remove((int) (Math.random() * positions.size()));
+        }
+
         return positions;
     }
 
@@ -533,15 +648,6 @@ public class AutoBuilder extends Module {
 
     private boolean isInRange(BlockPos pos) {
         return mc.player != null && mc.player.getEyePos().distanceTo(Vec3d.ofCenter(pos)) <= placeRange.get();
-    }
-
-    private FindItemResult findBlock() {
-        Block sel = blockToUse.get();
-        return InvUtils.findInHotbar(s -> s.getItem() instanceof BlockItem bi && bi.getBlock() == sel);
-    }
-
-    private boolean isBuildBlock(net.minecraft.item.ItemStack stack) {
-        return stack.getItem() instanceof BlockItem bi && bi.getBlock() == blockToUse.get();
     }
 
     private boolean hotbarHasEnoughBuildBlocksFor(int need) {
@@ -565,7 +671,7 @@ public class AutoBuilder extends Module {
     }
 
     // File I/O
-    private static class AutoBuilderPatternFile { int version = 1; boolean[][] grid = new boolean[5][5]; }
+    private static class AutoBuilderPatternFile { int version = 1; boolean[][] grid = new boolean[GridSide][GridSide]; }
     private static class AutoBuilderStatsFile { int version = 1; int totalBuildsCompleted = 0; }
 
     private static Path getPatternFilePath() {
@@ -586,7 +692,7 @@ public class AutoBuilder extends Module {
         try {
             var data = GSON.fromJson(Files.readString(file, StandardCharsets.UTF_8), AutoBuilderPatternFile.class);
             if (data != null && data.grid != null) {
-                for (int r = 0; r < 5; r++) for (int c = 0; c < 5; c++)
+                for (int r = 0; r < GridSide; r++) for (int c = 0; c < GridSide; c++)
                     grid[r][c] = r < data.grid.length && data.grid[r] != null && c < data.grid[r].length && data.grid[r][c];
             }
         } catch (JsonSyntaxException | java.io.IOException ignored) {}
@@ -597,7 +703,7 @@ public class AutoBuilder extends Module {
             Path f = getPatternFilePath();
             Files.createDirectories(f.getParent());
             var data = new AutoBuilderPatternFile();
-            for (int r = 0; r < 5; r++) System.arraycopy(grid[r], 0, data.grid[r], 0, 5);
+            for (int r = 0; r < GridSide; r++) System.arraycopy(grid[r], 0, data.grid[r], 0, GridSide);
             Files.writeString(f, GSON.toJson(data), StandardCharsets.UTF_8);
         } catch (Throwable ignored) {}
     }
